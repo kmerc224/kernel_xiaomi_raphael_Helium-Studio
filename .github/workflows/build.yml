@@ -48,7 +48,7 @@ jobs:
           repository: HeliumStudio-Dev/kernel_xiaomi_raphael
           ref: oss-base
           path: kernel
-          fetch-depth: 1
+          fetch-depth: 0
 
       # ============================================
       # Step 2: 安装系统依赖 + 下载 Mandi-Sa Clang
@@ -161,36 +161,137 @@ jobs:
           cp out/arch/arm64/boot/Image.gz-dtb ${OUTPUT_DIR}/Image.gz-dtb
           cp out/arch/arm64/boot/Image.gz ${OUTPUT_DIR}/Image.gz
           cp out/arch/arm64/boot/Image ${OUTPUT_DIR}/Image 2>/dev/null || true
-          cp out/vmlinux ${OUTPUT_DIR}/vmlinux 2>/dev/null || true
 
           # 复制内核模块
           mkdir -p ${OUTPUT_DIR}/modules
           find out -name "*.ko" -exec cp {} ${OUTPUT_DIR}/modules/ \; 2>/dev/null || true
 
           # ============================================
-          # 方案 A: AnyKernel3 刷机包 (只放 Image.gz-dtb，不放 dtb 目录)
+          # 下载 magiskboot (PC x86_64 版本 + Android ARM64 版本)
           # ============================================
-          echo ">>> 创建 AnyKernel3 刷机包..."
-          wget -q "https://github.com/osm0sis/AnyKernel3/archive/refs/heads/master.zip" -O /tmp/ak3.zip
-          unzip -qo /tmp/ak3.zip -d /tmp/
+          echo ">>> 下载 magiskboot..."
+          wget -q "https://github.com/Uevo001/magiskboot-linux/raw/refs/heads/main/x86_64/magiskboot" -O ${OUTPUT_DIR}/magiskboot-x86_64
+          chmod +x ${OUTPUT_DIR}/magiskboot-x86_64
 
-          # 只放 Image.gz-dtb，不放 dtb/ 目录，否则 AK3 会错误地使用 split DTB 模式
-          cp ${OUTPUT_DIR}/Image.gz-dtb /tmp/AnyKernel3-master/Image.gz-dtb
+          # 从 Magisk APK 中提取 ARM64 版本的 magiskboot
+          wget -q "https://github.com/topjohnwu/Magisk/releases/download/v28.1/Magisk-v28.1.apk" -O /tmp/magisk.apk
+          unzip -qo /tmp/magisk.apk -d /tmp/magisk_apk/
+          cp /tmp/magisk_apk/lib/arm64-v8a/libmagiskboot.so ${OUTPUT_DIR}/magiskboot-arm64 2>/dev/null || true
+          chmod +x ${OUTPUT_DIR}/magiskboot-arm64 2>/dev/null || true
 
-          cat > /tmp/AnyKernel3-master/anykernel.sh << 'AK3SH'
-          kernel.string=Helium Studio Kernel for Redmi K20 Pro (raphael)
-          device.name1=raphael
-          device.name2=raphaelin
-          device.name3=raphaels
-          device.name4=raphael_global
-          device.name5=raphael_cn
-          block=/dev/block/bootdevice/by-name/boot
-          is_slot_device=0
-          ramdisk_compression=auto
-          AK3SH
+          # ============================================
+          # 创建电脑端 ADB 刷入脚本
+          # ============================================
+          cat > ${OUTPUT_DIR}/rebuild.sh << 'REBUILDSCRIPT'
+          #!/usr/bin/env bash
+          # ================================================================
+          # Helium Kernel 手动刷入脚本 (电脑端 ADB)
+          # 用法: 手机进 TWRP → 连电脑 → 运行此脚本
+          # ================================================================
+          set -e
 
-          cd /tmp/AnyKernel3-master
-          zip -r9 ${OUTPUT_DIR}/Helium-Kernel-raphael-$(date +%Y%m%d)-AK3.zip ./* -x "*.git*" -x "README.md"
+          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+          MAGISKBOOT="${SCRIPT_DIR}/magiskboot-x86_64"
+          KERNEL="${SCRIPT_DIR}/Image.gz-dtb"
+
+          echo ">>> 检查 ADB 连接..."
+          adb devices | grep -q "recovery" || { echo "请先进入 TWRP 并连接电脑!"; exit 1; }
+
+          echo ">>> 从手机拉取当前 boot.img..."
+          adb shell "dd if=/dev/block/bootdevice/by-name/boot of=/tmp/boot.img"
+          adb pull /tmp/boot.img /tmp/boot.img
+          cp /tmp/boot.img /tmp/boot-orig.img
+
+          echo ">>> 用 magiskboot 解包 boot.img..."
+          "${MAGISKBOOT}" unpack /tmp/boot.img
+
+          echo ">>> 替换内核为 Helium Image.gz-dtb..."
+          cp "${KERNEL}" /tmp/kernel
+
+          echo ">>> 重新打包 boot.img..."
+          "${MAGISKBOOT}" repack /tmp/boot.img
+
+          echo ">>> 推回手机..."
+          adb push /tmp/new-boot.img /tmp/new-boot.img
+
+          echo ">>> 刷入 boot 分区..."
+          adb shell "dd if=/tmp/new-boot.img of=/dev/block/bootdevice/by-name/boot"
+
+          echo ""
+          echo "======================================"
+          echo "  刷入完成！"
+          echo "  原始 boot.img 备份: /tmp/boot-orig.img"
+          echo "  请重启手机: adb reboot"
+          echo "======================================"
+          REBUILDSCRIPT
+          chmod +x ${OUTPUT_DIR}/rebuild.sh
+
+          # ============================================
+          # 创建 TWRP 直接刷入包 (不使用 AK3, 用 magiskboot-arm64)
+          # ============================================
+          echo ">>> 创建 TWRP 刷入包..."
+          mkdir -p /tmp/twrp_zip/META-INF/com/google/android/
+
+          # 直接用 shell 脚本当 update-binary (TWRP 支持)
+          cat > /tmp/twrp_zip/META-INF/com/google/android/update-binary << 'TWRPSCRIPT'
+          #!/sbin/sh
+          # ================================================================
+          # Helium Kernel TWRP 刷入脚本
+          # 使用 magiskboot 手动解包/替换内核/重新打包
+          # ================================================================
+          OUTFD=$2
+          ZIPFILE=$3
+
+          ui_print() {
+            echo -e "ui_print $1\nui_print" >> /proc/self/fd/$OUTFD
+          }
+
+          ui_print "======================================"
+          ui_print " Helium Studio Kernel for raphael"
+          ui_print "======================================"
+
+          # 解压文件
+          ui_print "解压中..."
+          unzip -o "$ZIPFILE" -d /tmp/helium_kernel/ > /dev/null
+          chmod +x /tmp/helium_kernel/magiskboot-arm64
+
+          # 备份当前 boot
+          ui_print "备份当前 boot.img..."
+          dd if=/dev/block/bootdevice/by-name/boot of=/tmp/helium_kernel/boot-backup.img
+
+          # 解包
+          ui_print "解包 boot.img..."
+          /tmp/helium_kernel/magiskboot-arm64 unpack /tmp/helium_kernel/boot-backup.img
+
+          # 替换内核
+          ui_print "替换内核..."
+          cp /tmp/helium_kernel/Image.gz-dtb /tmp/helium_kernel/kernel
+
+          # 重新打包
+          ui_print "重新打包..."
+          /tmp/helium_kernel/magiskboot-arm64 repack /tmp/helium_kernel/boot-backup.img
+
+          # 刷入
+          ui_print "刷入 boot 分区..."
+          dd if=/tmp/helium_kernel/new-boot.img of=/dev/block/bootdevice/by-name/boot
+
+          ui_print ""
+          ui_print "======================================"
+          ui_print " 刷入完成!"
+          ui_print " 备份: /tmp/helium_kernel/boot-backup.img"
+          ui_print "======================================"
+          TWRPSCRIPT
+          chmod 755 /tmp/twrp_zip/META-INF/com/google/android/update-binary
+
+          # 空 updater-script (TWRP 需要此文件存在)
+          echo "# dummy" > /tmp/twrp_zip/META-INF/com/google/android/updater-script
+
+          # 放入内核和 magiskboot
+          cp ${OUTPUT_DIR}/Image.gz-dtb /tmp/twrp_zip/Image.gz-dtb
+          cp ${OUTPUT_DIR}/magiskboot-arm64 /tmp/twrp_zip/magiskboot-arm64
+
+          cd /tmp/twrp_zip
+          zip -r9 ${OUTPUT_DIR}/Helium-Kernel-raphael-$(date +%Y%m%d).zip ./*
           cd ${{ github.workspace }}
 
           echo ">>> 产物列表:"
@@ -233,6 +334,6 @@ jobs:
             ### 注意
             - 仅适用于 Redmi K20 Pro / Mi 9T Pro (raphael)
             - 刷入前请备份 `boot` 和 `dtbo` 分区
-          files: ${{ github.workspace }}/output/Helium-Kernel-raphael-*-AK3.zip
+          files: ${{ github.workspace }}/output/Helium-Kernel-raphael-*.zip
           draft: false
           prerelease: false
