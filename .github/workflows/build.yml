@@ -158,46 +158,48 @@ jobs:
           mkdir -p ${OUTPUT_DIR}
 
           # 复制内核镜像
-          cp out/arch/arm64/boot/Image.gz ${OUTPUT_DIR}/Image.gz
           cp out/arch/arm64/boot/Image.gz-dtb ${OUTPUT_DIR}/Image.gz-dtb
+          cp out/arch/arm64/boot/Image.gz ${OUTPUT_DIR}/Image.gz
           cp out/arch/arm64/boot/Image ${OUTPUT_DIR}/Image 2>/dev/null || true
           cp out/vmlinux ${OUTPUT_DIR}/vmlinux 2>/dev/null || true
-
-          # 复制 DTB
-          if ls out/arch/arm64/boot/dts/vendor/qcom/*.dtb 1>/dev/null 2>&1; then
-            mkdir -p ${OUTPUT_DIR}/dtb
-            cp out/arch/arm64/boot/dts/vendor/qcom/*.dtb ${OUTPUT_DIR}/dtb/ 2>/dev/null || true
-          fi
 
           # 复制内核模块
           mkdir -p ${OUTPUT_DIR}/modules
           find out -name "*.ko" -exec cp {} ${OUTPUT_DIR}/modules/ \; 2>/dev/null || true
 
-          # 打包 AnyKernel3
+          # ============================================
+          # 方案 A: AnyKernel3 刷机包 (只放 Image.gz-dtb，不放 dtb 目录)
+          # ============================================
           echo ">>> 创建 AnyKernel3 刷机包..."
           wget -q "https://github.com/osm0sis/AnyKernel3/archive/refs/heads/master.zip" -O /tmp/ak3.zip
           unzip -qo /tmp/ak3.zip -d /tmp/
 
-          # 关键修复：使用 Image.gz-dtb（含设备树），而非 Image.gz（不含 DTB，导致卡第一屏）
+          # 只放 Image.gz-dtb，不放 dtb/ 目录，否则 AK3 会错误地使用 split DTB 模式
           cp ${OUTPUT_DIR}/Image.gz-dtb /tmp/AnyKernel3-master/Image.gz-dtb
-          cp -r ${OUTPUT_DIR}/dtb /tmp/AnyKernel3-master/ 2>/dev/null || true
 
           cat > /tmp/AnyKernel3-master/anykernel.sh << 'AK3SH'
-          # AnyKernel3 配置
-          kernel.string="Helium Studio Kernel for Redmi K20 Pro (raphael)"
+          kernel.string=Helium Studio Kernel for Redmi K20 Pro (raphael)
           device.name1=raphael
           device.name2=raphaelin
           device.name3=raphaels
+          device.name4=raphael_global
+          device.name5=raphael_cn
           block=/dev/block/bootdevice/by-name/boot
           is_slot_device=0
           ramdisk_compression=auto
-          # 使用 Image.gz-dtb 而非 Image.gz，确保 DTB 正确注入
+          do.cleanup=1
+          do.devicecheck=1
           AK3SH
 
           cd /tmp/AnyKernel3-master
-          zip -r9 ${OUTPUT_DIR}/Helium-Kernel-raphael-$(date +%Y%m%d).zip ./* -x "*.git*" -x "README.md"
+          zip -r9 ${OUTPUT_DIR}/Helium-Kernel-raphael-$(date +%Y%m%d)-AK3.zip ./* -x "*.git*" -x "README.md"
           cd ${{ github.workspace }}
 
+          # ============================================
+          # 方案 B: 直接刷入 Image.gz-dtb (TWRP: Install Image → boot)
+          # ============================================
+          echo ">>> 生成直接刷入包..."
+          cp ${OUTPUT_DIR}/Image.gz-dtb ${OUTPUT_DIR}/boot-raphael-$(date +%Y%m%d).img
           echo ">>> 产物列表:"
           ls -lh ${OUTPUT_DIR}/
 
@@ -238,6 +240,8 @@ jobs:
             ### 注意
             - 仅适用于 Redmi K20 Pro / Mi 9T Pro (raphael)
             - 刷入前请备份 `boot` 和 `dtbo` 分区
-          files: ${{ github.workspace }}/output/Helium-Kernel-raphael-*.zip
+          files: |
+            ${{ github.workspace }}/output/Helium-Kernel-raphael-*-AK3.zip
+            ${{ github.workspace }}/output/boot-raphael-*.img
           draft: false
           prerelease: false
