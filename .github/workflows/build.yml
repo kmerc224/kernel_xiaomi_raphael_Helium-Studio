@@ -187,19 +187,12 @@ jobs:
           block=/dev/block/bootdevice/by-name/boot
           is_slot_device=0
           ramdisk_compression=auto
-          do.cleanup=1
-          do.devicecheck=1
           AK3SH
 
           cd /tmp/AnyKernel3-master
           zip -r9 ${OUTPUT_DIR}/Helium-Kernel-raphael-$(date +%Y%m%d)-AK3.zip ./* -x "*.git*" -x "README.md"
           cd ${{ github.workspace }}
 
-          # ============================================
-          # 方案 B: 直接刷入 Image.gz-dtb (TWRP: Install Image → boot)
-          # ============================================
-          echo ">>> 生成直接刷入包..."
-          cp ${OUTPUT_DIR}/Image.gz-dtb ${OUTPUT_DIR}/boot-raphael-$(date +%Y%m%d).img
           echo ">>> 产物列表:"
           ls -lh ${OUTPUT_DIR}/
 
@@ -240,8 +233,6 @@ jobs:
             ### 注意
             - 仅适用于 Redmi K20 Pro / Mi 9T Pro (raphael)
             - 刷入前请备份 `boot` 和 `dtbo` 分区
-          files: |
-            ${{ github.workspace }}/output/Helium-Kernel-raphael-*-AK3.zip
-            ${{ github.workspace }}/output/boot-raphael-*.img
+          files: ${{ github.workspace }}/output/Helium-Kernel-raphael-*-AK3.zip
           draft: false
           prerelease: false
