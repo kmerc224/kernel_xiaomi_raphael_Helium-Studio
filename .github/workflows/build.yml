@@ -57,54 +57,38 @@ jobs:
           fetch-depth: 0
 
       # ============================================
-      # Step 2: 安装编译依赖
+      # Step 2: 安装编译依赖 + 工具链
       # ============================================
-      - name: 安装编译依赖
+      - name: 安装编译依赖与工具链
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
-            git \
-            make \
-            flex \
-            bison \
-            bc \
-            libssl-dev \
-            libelf-dev \
-            cpio \
-            xz-utils \
-            zip \
-            python3 \
-            wget \
-            ca-certificates \
-            device-tree-compiler
+            git make flex bison bc \
+            libssl-dev libelf-dev cpio \
+            xz-utils zip unzip \
+            python3 wget ca-certificates \
+            device-tree-compiler \
+            clang-15 lld-15 llvm-15 \
+            gcc-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi
 
-      # ============================================
-      # Step 3: 下载并设置 Clang/LLVM 工具链
-      # ============================================
-      - name: 设置 Clang/LLVM 工具链
-        run: |
-          mkdir -p ${{ github.workspace }}/toolchain
-          cd ${{ github.workspace }}/toolchain
+          # 创建符号链接，让 make 可以直接找到 clang / ld.lld 等
+          sudo update-alternatives --install /usr/bin/clang        clang        /usr/bin/clang-15        100
+          sudo update-alternatives --install /usr/bin/clang++      clang++      /usr/bin/clang++-15      100
+          sudo update-alternatives --install /usr/bin/ld.lld       ld.lld       /usr/bin/ld.lld-15       100
+          sudo update-alternatives --install /usr/bin/llvm-ar      llvm-ar      /usr/bin/llvm-ar-15      100
+          sudo update-alternatives --install /usr/bin/llvm-nm      llvm-nm      /usr/bin/llvm-nm-15      100
+          sudo update-alternatives --install /usr/bin/llvm-objcopy llvm-objcopy /usr/bin/llvm-objcopy-15 100
+          sudo update-alternatives --install /usr/bin/llvm-objdump llvm-objdump /usr/bin/llvm-objdump-15 100
+          sudo update-alternatives --install /usr/bin/llvm-readelf llvm-readelf /usr/bin/llvm-readelf-15 100
+          sudo update-alternatives --install /usr/bin/llvm-strip   llvm-strip   /usr/bin/llvm-strip-15   100
 
-          # 下载 AOSP Clang 预编译工具链
-          wget -q "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-${CLANG_VERSION}.tar.gz" -O clang.tar.gz \
-            || wget -q "https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz" -O clang.tar.xz
-
-          if [ -f clang.tar.gz ]; then
-            tar xzf clang.tar.gz -C .
-            rm clang.tar.gz
-          elif [ -f clang.tar.xz ]; then
-            tar xf clang.tar.xz -C . --strip-components=1
-            rm clang.tar.xz
-          fi
-
-          # 下载 ARM64 GCC 交叉编译器 (用于链接)
-          wget -q "https://developer.arm.com/-/media/Files/downloads/gnu/13.2.rel1/binrel/arm-gnu-toolchain-13.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz" -O gcc-arm64.tar.xz
-          tar xf gcc-arm64.tar.xz -C . --strip-components=1
-          rm gcc-arm64.tar.xz
-
-          echo "CLANG_DIR=${{ github.workspace }}/toolchain" >> $GITHUB_ENV
-          echo "GCC_ARM64_DIR=${{ github.workspace }}/toolchain" >> $GITHUB_ENV
+          # 验证工具链
+          echo "=== 工具链版本 ==="
+          clang --version | head -1
+          ld.lld --version | head -1
+          aarch64-linux-gnu-gcc --version | head -1
+          arm-linux-gnueabi-gcc --version | head -1
 
       # ============================================
       # Step 4: 集成 KernelSU (可选)
@@ -128,16 +112,9 @@ jobs:
           DEFCONFIG="${{ inputs.defconfig || env.DEFCONFIG }}"
           echo "使用配置: ${DEFCONFIG}"
 
-          # 设置 Clang 路径
-          CLANG_DIR="${{ github.workspace }}/toolchain"
-          GCC_ARM64_DIR="${{ github.workspace }}/toolchain"
-
-          # 导出环境变量
-          export PATH="${CLANG_DIR}/bin:${GCC_ARM64_DIR}/bin:${PATH}"
+          # 工具链已在系统中通过 apt 安装，无需额外 PATH 设置
           export ARCH=arm64
           export SUBARCH=arm64
-
-          # 编译参数
           export CC=clang
           export LD=ld.lld
           export AR=llvm-ar
@@ -150,42 +127,34 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
 
-          # 编译选项
-          BUILD_FLAGS=""
-          if [ "${{ inputs.lto }}" != "false" ]; then
-            BUILD_FLAGS="${BUILD_FLAGS} LLVM=1"
-          else
-            BUILD_FLAGS="${BUILD_FLAGS} LLVM=1"
-          fi
-
           # 生成配置
           echo ">>> 生成内核配置: ${DEFCONFIG}"
-          make ${BUILD_FLAGS} O=out ${DEFCONFIG}
+          make LLVM=1 O=out ${DEFCONFIG}
 
           # 如果有 KernelSU, 启用相关配置
           if [ "${KERNELSU_INTEGRATED}" = "true" ]; then
             echo ">>> 启用 KernelSU"
             cd out
             ./scripts/config --enable CONFIG_KSU
-            make ${BUILD_FLAGS} O=out olddefconfig
+            make LLVM=1 O=out olddefconfig
             cd ..
           fi
 
           # 开始编译
           echo ">>> 开始编译内核..."
-          make ${BUILD_FLAGS} O=out -j$(nproc --all) 2>&1 | tee build.log
+          make LLVM=1 O=out -j$(nproc --all) 2>&1 | tee build.log
 
           # 检查编译结果
-          if [ ! -f out/arch/arm64/boot/Image.gz ]; then
-            echo ">>> 编译失败！Image.gz 未生成"
-            echo "=== 编译日志末尾 ==="
-            tail -100 build.log
+          if [ ! -f out/arch/arm64/boot/Image.gz ] && [ ! -f out/arch/arm64/boot/Image ]; then
+            echo ">>> 编译失败！Image / Image.gz 均未生成"
+            echo "=== 编译日志末尾 (最后 150 行) ==="
+            tail -150 build.log
             exit 1
           fi
 
           echo ">>> 编译成功！"
           ls -lh out/arch/arm64/boot/Image*
-          echo "KERNEL_VERSION=$(make kernelversion)" >> $GITHUB_ENV
+          echo "KERNEL_VERSION=$(make LLVM=1 kernelversion)" >> $GITHUB_ENV
 
       # ============================================
       # Step 6: 打包产物
