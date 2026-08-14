@@ -134,10 +134,8 @@ jobs:
           # 如果有 KernelSU, 启用相关配置
           if [ "${KERNELSU_INTEGRATED}" = "true" ]; then
             echo ">>> 启用 KernelSU"
-            cd out
-            ./scripts/config --enable CONFIG_KSU
+            ./scripts/config --file out/.config --enable CONFIG_KSU
             make LLVM=1 O=out olddefconfig
-            cd ..
           fi
 
           # 开始编译
