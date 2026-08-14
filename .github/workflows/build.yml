@@ -1,0 +1,283 @@
+name: Build Helium Studio Kernel (raphael)
+
+on:
+  push:
+    branches: [oss-base]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+  pull_request:
+    branches: [oss-base]
+  workflow_dispatch:
+    inputs:
+      defconfig:
+        description: '内核配置 (defconfig)'
+        required: true
+        type: choice
+        default: 'raphael_defconfig'
+        options:
+          - raphael_defconfig
+          - raphael-vts_defconfig
+      ksu:
+        description: '集成 KernelSU'
+        required: false
+        type: boolean
+        default: true
+      lto:
+        description: '启用 LTO (链接时优化)'
+        required: false
+        type: boolean
+        default: true
+
+env:
+  # 内核源码仓库
+  KERNEL_REPO: https://github.com/HeliumStudio-Dev/kernel_xiaomi_raphael.git
+  KERNEL_BRANCH: oss-base
+  # 编译配置
+  ARCH: arm64
+  DEFCONFIG: raphael_defconfig
+  # Clang 工具链
+  CLANG_VERSION: r522817
+
+jobs:
+  build:
+    name: 编译内核 | ${{ inputs.defconfig || 'raphael_defconfig' }}
+    runs-on: ubuntu-22.04
+
+    steps:
+      # ============================================
+      # Step 1: 检出内核源码
+      # ============================================
+      - name: 检出内核源码
+        uses: actions/checkout@v4
+        with:
+          repository: HeliumStudio-Dev/kernel_xiaomi_raphael
+          ref: oss-base
+          path: kernel
+          fetch-depth: 0
+
+      # ============================================
+      # Step 2: 安装编译依赖
+      # ============================================
+      - name: 安装编译依赖
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            git \
+            make \
+            flex \
+            bison \
+            bc \
+            libssl-dev \
+            libelf-dev \
+            cpio \
+            xz-utils \
+            zip \
+            python3 \
+            wget \
+            ca-certificates \
+            device-tree-compiler
+
+      # ============================================
+      # Step 3: 下载并设置 Clang/LLVM 工具链
+      # ============================================
+      - name: 设置 Clang/LLVM 工具链
+        run: |
+          mkdir -p ${{ github.workspace }}/toolchain
+          cd ${{ github.workspace }}/toolchain
+
+          # 下载 AOSP Clang 预编译工具链
+          wget -q "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-${CLANG_VERSION}.tar.gz" -O clang.tar.gz \
+            || wget -q "https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/clang+llvm-17.0.6-x86_64-linux-gnu-ubuntu-22.04.tar.xz" -O clang.tar.xz
+
+          if [ -f clang.tar.gz ]; then
+            tar xzf clang.tar.gz -C .
+            rm clang.tar.gz
+          elif [ -f clang.tar.xz ]; then
+            tar xf clang.tar.xz -C . --strip-components=1
+            rm clang.tar.xz
+          fi
+
+          # 下载 ARM64 GCC 交叉编译器 (用于链接)
+          wget -q "https://developer.arm.com/-/media/Files/downloads/gnu/13.2.rel1/binrel/arm-gnu-toolchain-13.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz" -O gcc-arm64.tar.xz
+          tar xf gcc-arm64.tar.xz -C . --strip-components=1
+          rm gcc-arm64.tar.xz
+
+          echo "CLANG_DIR=${{ github.workspace }}/toolchain" >> $GITHUB_ENV
+          echo "GCC_ARM64_DIR=${{ github.workspace }}/toolchain" >> $GITHUB_ENV
+
+      # ============================================
+      # Step 4: 集成 KernelSU (可选)
+      # ============================================
+      - name: 集成 KernelSU
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.ksu || github.event_name != 'workflow_dispatch' }}
+        run: |
+          cd ${{ github.workspace }}/kernel
+          rm -rf KernelSU
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s -- --cleanup
+          echo "KERNELSU_INTEGRATED=true" >> $GITHUB_ENV
+
+      # ============================================
+      # Step 5: 编译内核
+      # ============================================
+      - name: 编译内核
+        run: |
+          cd ${{ github.workspace }}/kernel
+
+          # 确定使用的 defconfig
+          DEFCONFIG="${{ inputs.defconfig || env.DEFCONFIG }}"
+          echo "使用配置: ${DEFCONFIG}"
+
+          # 设置 Clang 路径
+          CLANG_DIR="${{ github.workspace }}/toolchain"
+          GCC_ARM64_DIR="${{ github.workspace }}/toolchain"
+
+          # 导出环境变量
+          export PATH="${CLANG_DIR}/bin:${GCC_ARM64_DIR}/bin:${PATH}"
+          export ARCH=arm64
+          export SUBARCH=arm64
+
+          # 编译参数
+          export CC=clang
+          export LD=ld.lld
+          export AR=llvm-ar
+          export NM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export READELF=llvm-readelf
+          export STRIP=llvm-strip
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+
+          # 编译选项
+          BUILD_FLAGS=""
+          if [ "${{ inputs.lto }}" != "false" ]; then
+            BUILD_FLAGS="${BUILD_FLAGS} LLVM=1"
+          else
+            BUILD_FLAGS="${BUILD_FLAGS} LLVM=1"
+          fi
+
+          # 生成配置
+          echo ">>> 生成内核配置: ${DEFCONFIG}"
+          make ${BUILD_FLAGS} O=out ${DEFCONFIG}
+
+          # 如果有 KernelSU, 启用相关配置
+          if [ "${KERNELSU_INTEGRATED}" = "true" ]; then
+            echo ">>> 启用 KernelSU"
+            cd out
+            ./scripts/config --enable CONFIG_KSU
+            make ${BUILD_FLAGS} O=out olddefconfig
+            cd ..
+          fi
+
+          # 开始编译
+          echo ">>> 开始编译内核..."
+          make ${BUILD_FLAGS} O=out -j$(nproc --all) 2>&1 | tee build.log
+
+          # 检查编译结果
+          if [ ! -f out/arch/arm64/boot/Image.gz ]; then
+            echo ">>> 编译失败！Image.gz 未生成"
+            echo "=== 编译日志末尾 ==="
+            tail -100 build.log
+            exit 1
+          fi
+
+          echo ">>> 编译成功！"
+          ls -lh out/arch/arm64/boot/Image*
+          echo "KERNEL_VERSION=$(make kernelversion)" >> $GITHUB_ENV
+
+      # ============================================
+      # Step 6: 打包产物
+      # ============================================
+      - name: 打包产物
+        run: |
+          cd ${{ github.workspace }}/kernel
+
+          OUTPUT_DIR=${{ github.workspace }}/output
+          mkdir -p ${OUTPUT_DIR}
+
+          # 复制内核镜像
+          cp out/arch/arm64/boot/Image.gz ${OUTPUT_DIR}/Image.gz
+          cp out/arch/arm64/boot/Image ${OUTPUT_DIR}/Image
+          cp out/vmlinux ${OUTPUT_DIR}/vmlinux
+
+          # 复制 DTB / DTBO
+          if [ -f out/arch/arm64/boot/dts/vendor/qcom/*.dtb ]; then
+            mkdir -p ${OUTPUT_DIR}/dtb
+            cp out/arch/arm64/boot/dts/vendor/qcom/*.dtb ${OUTPUT_DIR}/dtb/ 2>/dev/null || true
+          fi
+
+          # 复制内核模块
+          mkdir -p ${OUTPUT_DIR}/modules
+          find out -name "*.ko" -exec cp {} ${OUTPUT_DIR}/modules/ \; 2>/dev/null || true
+
+          # 打包 AnyKernel3 格式
+          echo ">>> 创建 AnyKernel3 刷机包..."
+          mkdir -p ${OUTPUT_DIR}/anykernel
+          # 下载 AnyKernel3 模板
+          wget -q "https://github.com/osm0sis/AnyKernel3/archive/refs/heads/master.zip" -O /tmp/ak3.zip
+          unzip -qo /tmp/ak3.zip -d /tmp/
+
+          cp ${OUTPUT_DIR}/Image.gz /tmp/AnyKernel3-master/Image.gz
+          cp -r ${OUTPUT_DIR}/dtb /tmp/AnyKernel3-master/ 2>/dev/null || true
+
+          # 生成 anykernel.sh 配置
+          cat > /tmp/AnyKernel3-master/anykernel.sh << 'AK3SH'
+          # AnyKernel3 配置
+          kernel.string="Helium Studio Kernel for Redmi K20 Pro (raphael)"
+          device.name1=raphael
+          device.name2=raphaelin
+          device.name3=raphaels
+          block=/dev/block/bootdevice/by-name/boot
+          is_slot_device=0
+          ramdisk_compression=auto
+          AK3SH
+
+          cd /tmp/AnyKernel3-master
+          zip -r9 ${OUTPUT_DIR}/Helium-Kernel-raphael-$(date +%Y%m%d).zip ./* -x "*.git*" -x "README.md"
+          cd ${{ github.workspace }}
+
+          echo ">>> 产物列表:"
+          ls -lh ${OUTPUT_DIR}/
+
+      # ============================================
+      # Step 7: 上传构建产物
+      # ============================================
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: Helium-Kernel-raphael-${{ github.run_id }}
+          path: ${{ github.workspace }}/output/
+          retention-days: 30
+          compression-level: 6
+
+      # ============================================
+      # Step 8: 创建 Release (仅 push 到 oss-base 时)
+      # ============================================
+      - name: 创建 Release
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/oss-base' }}
+        uses: softprops/action-gh-release@v1
+        with:
+          name: "Helium Kernel r${{ github.run_number }}"
+          tag_name: "r${{ github.run_number }}"
+          body: |
+            ## Helium Studio Kernel for Redmi K20 Pro (raphael)
+
+            - **内核版本**: `${{ env.KERNEL_VERSION }}`
+            - **架构**: arm64
+            - **编译工具链**: Clang ${{ env.CLANG_VERSION }}
+            - **KernelSU**: ${{ env.KERNELSU_INTEGRATED || 'false' }}
+            - **构建日期**: $(date +%Y-%m-%d)
+
+            ### 刷入方法
+            1. 进入 TWRP / OrangeFox Recovery
+            2. 刷入 `Helium-Kernel-raphael-*.zip`
+            3. 重启系统
+
+            ### 注意
+            - 仅适用于 Redmi K20 Pro / Mi 9T Pro (raphael)
+            - 刷入前请备份 `boot` 和 `dtbo` 分区
+          files: ${{ github.workspace }}/output/Helium-Kernel-raphael-*.zip
+          draft: false
+          prerelease: false
