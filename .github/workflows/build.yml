@@ -129,18 +129,18 @@ jobs:
 
           # 生成配置
           echo ">>> 生成内核配置: ${DEFCONFIG}"
-          make LLVM=1 O=out ${DEFCONFIG}
+          make LLVM=1 O=out ${DEFCONFIG} DTC=/usr/bin/dtc
 
           # 如果有 KernelSU, 启用相关配置
           if [ "${KERNELSU_INTEGRATED}" = "true" ]; then
             echo ">>> 启用 KernelSU"
             ./scripts/config --file out/.config --enable CONFIG_KSU
-            make LLVM=1 O=out olddefconfig
+            make LLVM=1 O=out olddefconfig DTC=/usr/bin/dtc
           fi
 
           # 开始编译
           echo ">>> 开始编译内核..."
-          make LLVM=1 O=out -j$(nproc --all) 2>&1 | tee build.log
+          make LLVM=1 O=out -j$(nproc --all) DTC=/usr/bin/dtc 2>&1 | tee build.log
 
           # 检查编译结果
           if [ ! -f out/arch/arm64/boot/Image.gz ] && [ ! -f out/arch/arm64/boot/Image ]; then
