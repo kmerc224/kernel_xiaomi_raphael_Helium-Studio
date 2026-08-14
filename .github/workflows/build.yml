@@ -48,7 +48,7 @@ jobs:
           repository: HeliumStudio-Dev/kernel_xiaomi_raphael
           ref: oss-base
           path: kernel
-          fetch-depth: 0
+          fetch-depth: 1
 
       # ============================================
       # Step 2: 安装系统依赖 + 下载 Mandi-Sa Clang
