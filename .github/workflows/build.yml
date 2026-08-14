@@ -67,7 +67,7 @@ jobs:
             libssl-dev libelf-dev cpio \
             xz-utils zip unzip \
             python3 wget ca-certificates \
-            device-tree-compiler \
+            device-tree-compiler libyaml-dev \
             clang-15 lld-15 llvm-15 \
             gcc-aarch64-linux-gnu \
             gcc-arm-linux-gnueabi
