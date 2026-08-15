@@ -171,6 +171,75 @@ jobs:
           # 复制 .config
           cp out/.config ${OUTPUT_DIR}/config 2>/dev/null || true
 
+          # ============================================
+          # 创建 AnyKernel3 刷机包
+          # ============================================
+          echo ">>> 下载 AnyKernel3 模板..."
+          wget -q "https://github.com/osm0sis/AnyKernel3/archive/refs/heads/master.zip" -O /tmp/ak3.zip
+          unzip -qo /tmp/ak3.zip -d /tmp/
+          AK3_DIR=/tmp/AnyKernel3-master
+
+          # 1. 内核镜像 (Image.gz-dtb = bundled kernel + DTB)
+          cp ${OUTPUT_DIR}/Image.gz-dtb ${AK3_DIR}/Image.gz-dtb
+
+          # 2. dtbo.img (AK3 会自动刷入 dtbo 分区)
+          if ls ${OUTPUT_DIR}/*.dtbo 1>/dev/null 2>&1; then
+            cp ${OUTPUT_DIR}/*.dtbo ${AK3_DIR}/dtbo.img 2>/dev/null || true
+          fi
+
+          # 3. 内核模块 (do.modules=1 时 AK3 自动安装到 ramdisk)
+          if [ -d ${OUTPUT_DIR}/modules ] && [ "$(ls ${OUTPUT_DIR}/modules/ 2>/dev/null)" ]; then
+            mkdir -p ${AK3_DIR}/modules
+            cp ${OUTPUT_DIR}/modules/*.ko ${AK3_DIR}/modules/ 2>/dev/null || true
+          fi
+
+          # 4. 额外产物放到 extras/ 目录 (不影响 AK3 逻辑)
+          mkdir -p ${AK3_DIR}/extras
+          cp ${OUTPUT_DIR}/Image.gz ${AK3_DIR}/extras/ 2>/dev/null || true
+          cp ${OUTPUT_DIR}/Image ${AK3_DIR}/extras/ 2>/dev/null || true
+          cp ${OUTPUT_DIR}/*.dtb ${AK3_DIR}/extras/ 2>/dev/null || true
+          cp ${OUTPUT_DIR}/config ${AK3_DIR}/extras/ 2>/dev/null || true
+
+          # 5. anykernel.sh — AK3 核心脚本
+          # 关键: shell 变量必须大写 (ak3-core.sh 直接使用 $BLOCK 等)
+          # file_getprop 属性用小写 (update-binary 从文件读取)
+          cat > ${AK3_DIR}/anykernel.sh << 'AK3SH'
+          # AnyKernel3 configuration for Helium Studio Kernel
+          # file_getprop 属性 (update-binary 读取)
+          kernel.string=Helium Studio Kernel for Redmi K20 Pro (raphael)
+          device.name1=raphael
+          device.name2=raphaelin
+          device.name3=raphaels
+          device.name4=raphael_global
+          device.name5=raphael_cn
+          do.devicecheck=0
+          do.modules=0
+          do.systemless=0
+          do.cleanup=0
+          do.cleanuponabort=0
+
+          # shell 变量 — 必须大写，ak3-core.sh 直接引用
+          BLOCK=/dev/block/bootdevice/by-name/boot;
+          IS_SLOT_DEVICE=0;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=auto;
+
+          # 导入 AK3 核心函数并执行刷入
+          . tools/ak3-core.sh;
+          dump_boot;
+          write_boot;
+          AK3SH
+
+          # 6. 打包
+          cd ${AK3_DIR}
+          AK3_ZIP="Helium-Kernel-raphael-$(date +%Y%m%d).zip"
+          zip -r9 ${OUTPUT_DIR}/${AK3_ZIP} ./* -x "*.git*" -x "README.md"
+          cd ${{ github.workspace }}
+
+          echo ">>> AK3 包内容:"
+          unzip -l ${OUTPUT_DIR}/${AK3_ZIP}
+
+          echo ""
           echo ">>> 产物列表:"
           ls -lh ${OUTPUT_DIR}/
 
@@ -203,22 +272,20 @@ jobs:
             - **KernelSU**: ${{ env.KERNELSU_INTEGRATED || 'false' }}
             - **构建日期**: $(date +%Y-%m-%d)
 
-            ### 产物
-            - `Image.gz-dtb` — 内核 + 设备树（刷入用）
-            - `Image.gz` / `Image` — 纯内核镜像
-            - `*.dtb` — 设备树文件
+            ### 刷入 (AnyKernel3)
+            1. 下载 `Helium-Kernel-raphael-*.zip`
+            2. 进入 TWRP / OrangeFox Recovery
+            3. 刷入 zip → 重启
+
+            ### AK3 包内容
+            - `Image.gz-dtb` — 内核 + 设备树（bundled）
+            - `dtbo.img` — DTBO 叠加层
+            - `extras/` — Image.gz, Image, dtb 文件, config
             - `modules/` — 内核模块 (.ko)
-            - `config` — 编译配置
 
             ### 注意
             - 仅适用于 Redmi K20 Pro / Mi 9T Pro (raphael)
             - 刷入前请备份 `boot` 分区
-          files: |
-            ${{ github.workspace }}/output/Image.gz-dtb
-            ${{ github.workspace }}/output/Image.gz
-            ${{ github.workspace }}/output/Image
-            ${{ github.workspace }}/output/*.dtb
-            ${{ github.workspace }}/output/*.dtbo
-            ${{ github.workspace }}/output/config
+          files: ${{ github.workspace }}/output/Helium-Kernel-raphael-*.zip
           draft: false
           prerelease: false
