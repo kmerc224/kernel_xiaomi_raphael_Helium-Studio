@@ -26,11 +26,12 @@ jobs:
           7z x llvm19.0.0-binutils2.42_amd64-kernel-arm_static-20240425.7z
           rm -rf llvm19.0.0-binutils2.42_amd64-kernel-arm_static-20240425.7z
           ls
+          
       # 3. 检出内核源码 (此处可替换为自己的源码)
       - name: 检出内核源码
         run: |
-        mkdir -p $HOME
-        git clone --depth=1 -b oss-base https://github.com/kmerc224/kernel_xiaomi_raphael_Helium-Studio.git
+          mkdir -p $HOME
+          git clone --depth=1 -b oss-base https://github.com/kmerc224/kernel_xiaomi_raphael_Helium-Studio.git
 
       # 4. 设置编译环境变量 并 开始编译
       - name: 编译内核
@@ -72,5 +73,5 @@ jobs:
           files: output/*   # 上传 output 目录下的所有文件
           draft: false
           prerelease: false
-         env:
-           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
