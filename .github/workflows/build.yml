@@ -48,7 +48,7 @@ jobs:
           repository: HeliumStudio-Dev/kernel_xiaomi_raphael
           ref: oss-base
           path: kernel
-          fetch-depth: 1
+          fetch-depth: 0
 
       # ============================================
       # Step 2: 安装系统依赖 + 下载 Mandi-Sa Clang
@@ -154,18 +154,18 @@ jobs:
         run: |
           cd ${{ github.workspace }}/kernel/out/arch/arm64/boot
           ls
-          
+
           cd ${{ github.workspace }}/kernel
           
           OUTPUT_DIR=${{ github.workspace }}/output
           mkdir -p ${OUTPUT_DIR}
 
           # 复制所有内核镜像产物
-          cp out/arch/arm64/boot/Image.gz-dtb ${OUTPUT_DIR}/Image.gz-dtb
+          cp out/arch/arm64/boot/Image ${OUTPUT_DIR}/Image
           cp out/arch/arm64/boot/Image.gz ${OUTPUT_DIR}/Image.gz
-          cp out/arch/arm64/boot/Image ${OUTPUT_DIR}/Image 2>/dev/null || true
-          cp out/arch/arm64/boot/dts/vendor/qcom/*.dtb ${OUTPUT_DIR}/ 2>/dev/null || true
-          cp out/arch/arm64/boot/dts/vendor/qcom/*.dtbo ${OUTPUT_DIR}/ 2>/dev/null || true
+          cp out/arch/arm64/boot/Image.gz-dtb ${OUTPUT_DIR}/Image.gz-dtb
+          cp out/arch/arm64/boot/dtb ${OUTPUT_DIR}/dtb
+          cp out/arch/arm64/boot/dtbo.img ${OUTPUT_DIR}/dtbo.img
 
           # 复制内核模块
           mkdir -p ${OUTPUT_DIR}/modules
