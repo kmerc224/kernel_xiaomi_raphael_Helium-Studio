@@ -154,8 +154,6 @@ jobs:
         run: |
           cd ${{ github.workspace }}/kernel/out/arch/arm64/boot
           ls
-          cd ${{ github.workspace }}/kernel/out/arch/arm64/boot/dts/vendor/
-          ls
           
           cd ${{ github.workspace }}/kernel
           
