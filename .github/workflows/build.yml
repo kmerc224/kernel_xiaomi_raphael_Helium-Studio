@@ -152,20 +152,17 @@ jobs:
       # ============================================
       - name: 打包产物
         run: |
-          cd ${{ github.workspace }}/kernel/out/arch/arm64/boot
-          ls
-
           cd ${{ github.workspace }}/kernel
-          
+
           OUTPUT_DIR=${{ github.workspace }}/output
           mkdir -p ${OUTPUT_DIR}
 
           # 复制所有内核镜像产物
-          cp out/arch/arm64/boot/Image ${OUTPUT_DIR}/Image
-          cp out/arch/arm64/boot/Image.gz ${OUTPUT_DIR}/Image.gz
           cp out/arch/arm64/boot/Image.gz-dtb ${OUTPUT_DIR}/Image.gz-dtb
-          cp out/arch/arm64/boot/dtb ${OUTPUT_DIR}/dtb
-          cp out/arch/arm64/boot/dtbo.img ${OUTPUT_DIR}/dtbo.img
+          cp out/arch/arm64/boot/Image.gz ${OUTPUT_DIR}/Image.gz
+          cp out/arch/arm64/boot/Image ${OUTPUT_DIR}/Image 2>/dev/null || true
+          cp out/arch/arm64/boot/dts/vendor/qcom/*.dtb ${OUTPUT_DIR}/ 2>/dev/null || true
+          cp out/arch/arm64/boot/dts/vendor/qcom/*.dtbo ${OUTPUT_DIR}/ 2>/dev/null || true
 
           # 复制内核模块
           mkdir -p ${OUTPUT_DIR}/modules
@@ -182,33 +179,30 @@ jobs:
           unzip -qo /tmp/ak3.zip -d /tmp/
           AK3_DIR=/tmp/AnyKernel3-master
 
-          # 1. 内核镜像 (Image.gz-dtb = bundled kernel + DTB)
+          # 1. 内核镜像 — 只放 Image.gz-dtb (bundled kernel + DTB)
+          #    注意: 不要同时放 Image.gz, 否则 AK3 会优先匹配 Image.gz (无 DTB) 导致 bootloop
           cp ${OUTPUT_DIR}/Image.gz-dtb ${AK3_DIR}/Image.gz-dtb
 
-          # 2. dtbo.img (AK3 会自动刷入 dtbo 分区)
-          if ls ${OUTPUT_DIR}/*.dtbo 1>/dev/null 2>&1; then
-            cp ${OUTPUT_DIR}/*.dtbo ${AK3_DIR}/dtbo.img 2>/dev/null || true
-          fi
-
-          # 3. 内核模块 (do.modules=1 时 AK3 自动安装到 ramdisk)
+          # 2. 内核模块
           if [ -d ${OUTPUT_DIR}/modules ] && [ "$(ls ${OUTPUT_DIR}/modules/ 2>/dev/null)" ]; then
             mkdir -p ${AK3_DIR}/modules
             cp ${OUTPUT_DIR}/modules/*.ko ${AK3_DIR}/modules/ 2>/dev/null || true
           fi
 
-          # 4. 额外产物放到 extras/ 目录 (不影响 AK3 逻辑)
+          # 3. 额外产物 (dtbo, Image.gz, dtb 等) 放到 extras/ — 不参与刷入
+          #    dtbo 不放到 AK3 根目录，避免与设备现有 dtbo 冲突导致 bootloop
           mkdir -p ${AK3_DIR}/extras
           cp ${OUTPUT_DIR}/Image.gz ${AK3_DIR}/extras/ 2>/dev/null || true
           cp ${OUTPUT_DIR}/Image ${AK3_DIR}/extras/ 2>/dev/null || true
           cp ${OUTPUT_DIR}/*.dtb ${AK3_DIR}/extras/ 2>/dev/null || true
+          cp ${OUTPUT_DIR}/*.dtbo ${AK3_DIR}/extras/ 2>/dev/null || true
           cp ${OUTPUT_DIR}/config ${AK3_DIR}/extras/ 2>/dev/null || true
 
-          # 5. anykernel.sh — AK3 核心脚本
-          # 关键: shell 变量必须大写 (ak3-core.sh 直接使用 $BLOCK 等)
-          # file_getprop 属性用小写 (update-binary 从文件读取)
+          # 4. anykernel.sh — 使用 split_boot + flash_boot (跳过 ramdisk 解包/重打包)
+          #    split_boot: 只拆分 boot.img, 不修改 ramdisk, 避免格式变化
+          #    flash_boot: 替换内核 + DTB, 重新打包并刷入 boot 分区
           cat > ${AK3_DIR}/anykernel.sh << 'AK3SH'
-          # AnyKernel3 configuration for Helium Studio Kernel
-          # file_getprop 属性 (update-binary 读取)
+          # AnyKernel3 for Helium Studio Kernel (raphael)
           kernel.string=Helium Studio Kernel for Redmi K20 Pro (raphael)
           device.name1=raphael
           device.name2=raphaelin
@@ -221,16 +215,19 @@ jobs:
           do.cleanup=0
           do.cleanuponabort=0
 
-          # shell 变量 — 必须大写，ak3-core.sh 直接引用
+          # shell 变量 (必须大写)
           BLOCK=/dev/block/bootdevice/by-name/boot;
           IS_SLOT_DEVICE=0;
           RAMDISK_COMPRESSION=auto;
           PATCH_VBMETA_FLAG=auto;
 
-          # 导入 AK3 核心函数并执行刷入
+          # 导入 AK3 核心
           . tools/ak3-core.sh;
-          dump_boot;
-          write_boot;
+
+          # split_boot: 只拆分 boot.img 不修改 ramdisk
+          # flash_boot: 用 Image.gz-dtb 替换内核, magiskboot 自动 repack
+          split_boot;
+          flash_boot;
           AK3SH
 
           # 6. 打包
@@ -281,14 +278,18 @@ jobs:
             3. 刷入 zip → 重启
 
             ### AK3 包内容
-            - `Image.gz-dtb` — 内核 + 设备树（bundled）
-            - `dtbo.img` — DTBO 叠加层
-            - `extras/` — Image.gz, Image, dtb 文件, config
+            - `Image.gz-dtb` — 内核 + 设备树（bundled），AK3 用于替换 boot 分区内核
+            - `extras/` — Image.gz, Image, dtb, dtbo, config（不参与刷入，备用）
             - `modules/` — 内核模块 (.ko)
+
+            ### 刷入策略
+            - 使用 `split_boot` + `flash_boot`（不修改 ramdisk，不刷 dtbo）
+            - 避免 dtbo 冲突和 ramdisk 格式变化导致的 bootloop
 
             ### 注意
             - 仅适用于 Redmi K20 Pro / Mi 9T Pro (raphael)
             - 刷入前请备份 `boot` 分区
+            - 手动打包时确保 AK3 根目录**只有 Image.gz-dtb**，不要把 Image.gz 也放进去
           files: ${{ github.workspace }}/output/Helium-Kernel-raphael-*.zip
           draft: false
           prerelease: false
