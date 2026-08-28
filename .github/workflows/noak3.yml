@@ -40,13 +40,14 @@ jobs:
 
     steps:
       # 1. 安装编译依赖（按 Ubuntu 22.04 修正：去掉不存在的 python2 / openjdk-8，
-      #    用显式包名替代 gcc-arm* 通配符，并补齐 dtc 需要的 libyaml / libelf）
+      #    用显式包名替代 gcc-arm* 通配符）
+      #    注意：绝不能装 libyaml-dev —— 会触发 dtc 的 yaml 分支并因变量名不匹配而链接失败
       - name: 安装编译依赖
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             bc bison build-essential ccache curl flex git gnupg gperf \
-            libelf-dev libyaml-dev libncurses-dev libssl-dev lz4 lzop \
+            libncurses-dev libssl-dev lz4 lzop \
             libxml2-utils rsync cpio zlib1g-dev zip unzip p7zip-full \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
 
@@ -67,6 +68,10 @@ jobs:
         run: |
           git clone --depth=1 -b "$KERNEL_BRANCH" "$KERNEL_REPO" $HOME/kernel
           cd $HOME/kernel
+          # 关键修复：本树的 scripts/dtc/Makefile 用 HOSTLDLIBS_dtc 设置 yaml 链接库，
+          # 而 scripts/Makefile.host 读的是 HOSTLOADLIBES_dtc，二者不匹配会导致
+          # yamltree.o 链接时 undefined reference to yaml_*。这里强制 dtc 走 NO_YAML 分支。
+          sed -i 's/pkg-config --exists yaml-0.1/false/' scripts/dtc/Makefile
           echo "== 最新提交 =="
           git log -1 --oneline
 
