@@ -1,0 +1,198 @@
+name: 编译 raphael 内核（纯净版 · 仅编译 + 提取全部产物）
+
+# ============================================================================
+# 说明：
+#   · 只做「下载工具链 → 检出源码 → 编译 → 收集全部产物 → 上传/发布」
+#   · 不集成 KernelSU，不做 AnyKernel3 打包
+#   · 需要换源码 / 分支 / defconfig 时，只改下面 jobs.build.env 里的变量
+#   · 触发方式：Actions → 本 workflow → Run workflow（可填版本号）
+# ============================================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: '发布版本号（留空则自动生成 build-编号）'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    name: 编译内核
+    runs-on: ubuntu-22.04
+
+    env:
+      # ======================================================================
+      # 集中配置区 —— 换源码 / 换分支 / 换 defconfig 都在这里改
+      # ======================================================================
+      # raphael（K20 Pro / 9T Pro）正确源码：Zundamon 内核基于此仓库
+      KERNEL_REPO: https://github.com/HeliumStudio-Dev/kernel_xiaomi_raphael.git
+      KERNEL_BRANCH: oss-base
+      DEFCONFIG: raphael_defconfig
+
+      # 【可选】旧模板里的 bool-x 源码（多分支含 susfs/KSU-Next，之前确认会导致不开机）。
+      # 如确需使用，注释掉上面两行，取消下面两行注释即可：
+      # KERNEL_REPO: https://github.com/onettboots/bool-x_xiaomi_raphael.git
+      # KERNEL_BRANCH: 14-DSPocd
+
+      # Mandi-Sa Clang 19 + binutils 2.42（针对 arm64 内核的静态工具链）
+      CLANG_URL: https://github.com/Mandi-Sa/clang/releases/download/amd64-kernel-arm_static-19/llvm19.0.0-binutils2.42_amd64-kernel-arm_static-20240425.7z
+
+    steps:
+      # 1. 安装编译依赖（按 Ubuntu 22.04 修正：去掉不存在的 python2 / openjdk-8，
+      #    用显式包名替代 gcc-arm* 通配符，并补齐 dtc 需要的 libyaml / libelf）
+      - name: 安装编译依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential ccache curl flex git gnupg gperf \
+            libelf-dev libyaml-dev libncurses-dev libssl-dev lz4 lzop \
+            libxml2-utils rsync cpio zlib1g-dev zip unzip p7zip-full \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
+
+      # 2. 下载并解压 Clang 工具链（带 binutils）
+      - name: 下载 Clang 工具链
+        run: |
+          mkdir -p $HOME/toolchain
+          cd $HOME/toolchain
+          wget -q "$CLANG_URL"
+          F=$(basename "$CLANG_URL")
+          7z x -y "$F" >/dev/null
+          rm -f "$F"
+          echo "== 解压结果（bin 目录）=="
+          find $HOME/toolchain -maxdepth 5 -type d -name bin | sort
+
+      # 3. 检出内核源码
+      - name: 检出内核源码
+        run: |
+          git clone --depth=1 -b "$KERNEL_BRANCH" "$KERNEL_REPO" $HOME/kernel
+          cd $HOME/kernel
+          echo "== 最新提交 =="
+          git log -1 --oneline
+
+      # 4. 编译内核（clang + aarch64 binutils）
+      - name: 编译内核
+        run: |
+          cd $HOME/kernel
+
+          # 把工具链所有 bin 目录加到 PATH 最前（clang 与 aarch64/arm binutils 可能分开放）
+          for d in $(find $HOME/toolchain -type d -name bin | sort -u); do
+            export PATH="$d:$PATH"
+          done
+
+          # 删除工具链自带的 host 链接器，防止抢占系统 ld 导致 dtc/yamltree 链接失败
+          for d in $(find $HOME/toolchain -type d -name bin | sort -u); do
+            rm -f "$d/ld" "$d/ld.bfd" "$d/ld.gold" "$d/collect2" 2>/dev/null || true
+          done
+
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CC=clang
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          export HOSTCC=gcc
+          export HOSTCXX=g++
+          export HOSTLD=ld
+
+          echo "== 工具链版本 =="
+          clang --version | head -1 || true
+          aarch64-linux-gnu-as --version | head -1 || true
+          aarch64-linux-gnu-ld --version | head -1 || true
+
+          make O=out "$DEFCONFIG"
+
+          # 根据配置决定是否生成压缩 / appended-dtb 镜像，避免“无此规则”报错
+          EXTRA=""
+          grep -q '^CONFIG_KERNEL_GZIP=y' out/.config && EXTRA="$EXTRA Image.gz"
+          grep -q '^CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y' out/.config && EXTRA="$EXTRA Image.gz-dtb"
+          echo "== 附加目标 =="
+          echo "$EXTRA"
+
+          # 核心产物：vmlinux → Image + 全部 dtbs（+ 可选 Image.gz / Image.gz-dtb）
+          make O=out -j"$(nproc)" Image dtbs $EXTRA
+
+      # 5. 尽力编译模块与 dtbo（失败不阻断主流程）
+      - name: 编译模块与 dtbo（尽力）
+        run: |
+          cd $HOME/kernel
+          for d in $(find $HOME/toolchain -type d -name bin | sort -u); do
+            export PATH="$d:$PATH"
+          done
+          export ARCH=arm64 SUBARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          export HOSTCC=gcc HOSTCXX=g++ HOSTLD=ld
+          make O=out -j"$(nproc)" modules || true
+          make O=out -j"$(nproc)" dtbo.img || true
+
+      # 6. 收集全部编译产物
+      - name: 收集编译产物
+        run: |
+          cd $HOME/kernel
+          A=$HOME/artifacts
+          mkdir -p $A/boot $A/dtbs $A/modules $A/misc
+          B=out/arch/arm64/boot
+
+          # 内核镜像
+          for f in Image Image.gz Image.gz-dtb dtb.img dtbo.img; do
+            [ -f "$B/$f" ] && cp -v "$B/$f" $A/boot/ || true
+          done
+
+          # 全部设备树 / 设备树覆盖
+          find $B -name '*.dtb'  -exec cp -v {} $A/dtbs/ \; 2>/dev/null || true
+          find $B -name '*.dtbo' -exec cp -v {} $A/dtbs/ \; 2>/dev/null || true
+
+          # 内核模块（保留 out 内相对路径，避免重名覆盖）
+          cd out
+          find . -name '*.ko' | while read f; do
+            mkdir -p "$A/modules/$(dirname "$f")"
+            cp -v "$f" "$A/modules/$f"
+          done
+          for f in modules.order modules.builtin modules.builtin.modinfo Module.symvers; do
+            [ -f "$f" ] && cp -v "$f" $A/misc/ || true
+          done
+          cd ..
+
+          # 符号表 / 最终配置 / 完整 ELF
+          for f in System.map vmlinux .config; do
+            [ -f "out/$f" ] && cp -v "out/$f" $A/misc/ || true
+          done
+
+          echo "== 产物清单 =="
+          find $A -type f | sort
+          echo "== 各产物大小 =="
+          find $A -type f -exec ls -lh {} \;
+
+          tar -C $A -czf kernel-artifacts.tar.gz .
+          echo "== 打包结果 =="
+          ls -lh kernel-artifacts.tar.gz
+          cp -v kernel-artifacts.tar.gz $GITHUB_WORKSPACE/
+
+      # 7. 上传 Artifact（始终可用）
+      - name: 上传编译产物（Artifact）
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-build-artifacts
+          path: kernel-artifacts.tar.gz
+          retention-days: 14
+
+      # 8. 发布到 Release（可选，失败不阻断）
+      - name: 发布到 Release（可选）
+        uses: softprops/action-gh-release@v2
+        continue-on-error: true
+        with:
+          tag_name: ${{ github.event.inputs.release_tag || format('build-{0}', github.run_number) }}
+          name: raphael 内核编译产物
+          body: |
+            纯净编译产物（无 KernelSU / 无 AnyKernel3）。
+            解压：`tar -xzf kernel-artifacts.tar.gz`
+            - boot/    = Image / Image.gz / Image.gz-dtb / dtbo.img
+            - dtbs/    = 全部 .dtb 与 .dtbo
+            - modules/ = 全部 .ko（保留原始路径）
+            - misc/    = System.map / vmlinux / .config / Module.symvers / modules.*
+          files: kernel-artifacts.tar.gz
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
