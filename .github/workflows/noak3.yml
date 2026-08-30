@@ -52,6 +52,12 @@ jobs:
           sed -i 's/pkg-config --exists yaml-0.1/false/' scripts/dtc/Makefile
           git log -1 --oneline
 
+      # 3.1 集成SukiSU
+      - name: 集成 SukiSU Ultra
+        run: |
+          cd $HOME/kernel
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
+
       # 4. 编译内核
       - name: 编译内核
         run: |
