@@ -1,9 +1,9 @@
-name: 编译 raphael 内核（只出 dtb / Image.gz / Image.gz-dtb）
+name: 编译 raphael 内核（dtb / dtbo.img / Image.gz / Image.gz-dtb + Release）
 
 # ============================================================================
 # 说明：
-#   · 只做「下载工具链 → 检出源码 → 编译 → 收集 3 类产物 → 分开上传」
-#   · 产物：全部 .dtb、Image.gz、Image.gz-dtb（三者分开上传，不打 tar 包）
+#   · 下载工具链 → 检出源码 → 编译 → 收集产物 → 分开上传 → 发布 Release
+#   · 产物：全部 .dtb、dtbo.img、Image.gz、Image.gz-dtb
 #   · 不集成 KernelSU，不做 AnyKernel3 打包
 #   · 换源码 / 分支 / defconfig 只改 jobs.build.env 里的变量
 # ============================================================================
@@ -15,6 +15,9 @@ jobs:
   build:
     name: 编译内核
     runs-on: ubuntu-22.04
+    # 发布 Release 需要写权限
+    permissions:
+      contents: write
 
     env:
       # ---- 集中配置区 ----
@@ -72,15 +75,17 @@ jobs:
 
           make O=out "$DEFCONFIG"
 
-          # 按 config 决定是否出压缩 / appended-dtb 镜像，避免“无此规则”报错
+          # 按 config 决定附加目标，避免“无此规则”报错
           EXTRA=""
           grep -q '^CONFIG_KERNEL_GZIP=y' out/.config && EXTRA="$EXTRA Image.gz"
           grep -q '^CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE=y' out/.config && EXTRA="$EXTRA Image.gz-dtb"
+          # dtbo.img 需要 CONFIG_BUILD_ARM64_DT_OVERLAY=y（raphael_defconfig 已开）
+          grep -q '^CONFIG_BUILD_ARM64_DT_OVERLAY=y' out/.config && EXTRA="$EXTRA dtbo.img"
           echo "== 附加目标：$EXTRA =="
 
           make O=out -j"$(nproc)" dtbs $EXTRA
 
-      # 5. 收集产物：Image.gz、Image.gz-dtb、全部 .dtb
+      # 5. 收集产物：Image.gz、Image.gz-dtb、dtbo.img、全部 .dtb
       - name: 收集产物
         run: |
           cd $HOME/kernel/out/arch/arm64/boot
@@ -97,11 +102,17 @@ jobs:
             cp -v "$f" "$GITHUB_WORKSPACE/dtbs/$rel"
           done
 
+          # 打包全部 .dtb 为单个 zip，方便 Release 直接下载
+          cd $GITHUB_WORKSPACE
+          if [ -n "$(find dtbs -name '*.dtb' 2>/dev/null | head -1)" ]; then
+            zip -r -q dtb-all.zip dtbs
+          fi
+
           echo "== 产物清单 =="
-          ls -lh $GITHUB_WORKSPACE/Image.gz $GITHUB_WORKSPACE/Image.gz-dtb 2>/dev/null || true
+          ls -lh $GITHUB_WORKSPACE/Image.gz $GITHUB_WORKSPACE/Image.gz-dtb $GITHUB_WORKSPACE/dtbo.img $GITHUB_WORKSPACE/dtb-all.zip 2>/dev/null || true
           find $GITHUB_WORKSPACE/dtbs -type f -exec ls -lh {} \;
 
-      # 6. 分开上传（三个独立 Artifact）
+      # 6. 分开上传（独立 Artifact）
       - name: 上传 Image.gz
         uses: actions/upload-artifact@v4
         with:
@@ -116,15 +127,48 @@ jobs:
           path: Image.gz-dtb
           retention-days: 14
 
-      - name: 上传 dtb（全部设备树）
-        uses: actions/upload-artifact@v4
-        with:
-          name: dtb
-          path: dtbs
-          retention-days: 14
       - name: 上传 dtbo.img
         uses: actions/upload-artifact@v4
         with:
           name: dtbo.img
           path: dtbo.img
           retention-days: 14
+
+      - name: 上传 dtb（全部设备树）
+        uses: actions/upload-artifact@v4
+        with:
+          name: dtb
+          path: dtbs
+          retention-days: 14
+
+      # 7. 发布 Release
+      - name: 发布 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: raphael 内核构建产物 r${{ github.run_number }}
+          body: |
+            ## raphael 内核构建产物
+
+            - 仓库: ${{ env.KERNEL_REPO }}
+            - 分支: ${{ env.KERNEL_BRANCH }}
+            - defconfig: ${{ env.DEFCONFIG }}
+
+            ### 产物
+            - `Image.gz` — 压缩内核（不含 dtb）
+            - `Image.gz-dtb` — 压缩内核 + Appended DTB
+            - `dtbo.img` — 设备树 overlay 镜像
+            - `dtb-all.zip` — 全部独立 .dtb
+
+            > `dtbo.img` 由 `arch/arm64/boot/Makefile` 的 `dtbo.img` 规则合成，
+            > 来源为 `find dts -name '*.dtbo'`（含 raphael-sm8150-overlay.dtbo）。
+          files: |
+            Image.gz
+            Image.gz-dtb
+            dtbo.img
+            dtb-all.zip
+          fail_on_unmatched_files: false
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
