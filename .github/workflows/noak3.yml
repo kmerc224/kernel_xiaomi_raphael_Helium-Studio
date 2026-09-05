@@ -18,7 +18,7 @@ jobs:
 
     env:
       # ---- 集中配置区 ----
-      KERNEL_REPO: https://github.com/HeliumStudio-Dev/kernel_xiaomi_raphael.git
+      KERNEL_REPO: https://github.com/kmerc224/kernel_xiaomi_raphael_Helium-Studio.git
       KERNEL_BRANCH: oss-base
       DEFCONFIG: raphael_defconfig
       CLANG_URL: https://github.com/Mandi-Sa/clang/releases/download/amd64-kernel-arm_static-19/llvm19.0.0-binutils2.42_amd64-kernel-arm_static-20240425.7z
