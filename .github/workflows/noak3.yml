@@ -88,6 +88,7 @@ jobs:
 
           cp -v Image.gz     $GITHUB_WORKSPACE/ 2>/dev/null || true
           cp -v Image.gz-dtb $GITHUB_WORKSPACE/ 2>/dev/null || true
+          cp -v dtbo.img     $GITHUB_WORKSPACE/ 2>/dev/null || true
 
           # 保留相对目录结构，避免不同子目录下同名 .dtb 互相覆盖
           find . -type f -name '*.dtb' -print0 | while IFS= read -r -d '' f; do
@@ -120,4 +121,10 @@ jobs:
         with:
           name: dtb
           path: dtbs
+          retention-days: 14
+      - name: 上传 dtbo.img
+        uses: actions/upload-artifact@v4
+        with:
+          name: dtbo.img
+          path: dtbo.img
           retention-days: 14
